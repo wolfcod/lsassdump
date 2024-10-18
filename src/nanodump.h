@@ -219,15 +219,23 @@ typedef enum _MEMORY_INFORMATION_CLASS
 #define STATUS_OBJECT_NAME_COLLISION 0xC0000035
 #define STATUS_ALERTED 0x00000101
 
+#ifdef _DEBUG
 #define DPRINT(fmt, ...) printf(fmt, __VA_ARGS__)
 #define PRINT_ERR(fmt, ...) printf("[ERROR]"#fmt"\n", __VA_ARGS__)
 #define DPRINT_ERR(fmt, ...) printf("[ERROR]"#fmt"\n", __VA_ARGS__)
 
 #define syscall_failed(fmt, status) printf("syscall failed. %s %d\n", fmt, status)
 #define malloc_failed() printf("[ERROR] malloc failed\n")
+#else
+#define DPRINT(fmt, ...) do {} while(0)
+#define PRINT_ERR(fmt, ...) do {} while(0)
+#define DPRINT_ERR(fmt, ...) do {} while(0)
+#define syscall_failed(fmt, status) do {} while(0)
+#define malloc_failed() do {} while(0)
+#endif
 
-#define intAlloc(size) calloc(1, size)
-#define intFree(addr) free(addr)
+#define intAlloc(size) HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, size)
+#define intFree(addr) HeapFree(GetProcessHeap(), 0, addr)
 
 #define DATA_FREE(d, l) \
     if (d) { \

