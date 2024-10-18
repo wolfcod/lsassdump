@@ -1,4 +1,4 @@
-# dumplsass
+# lsassdump
 
 This project merges the following project:
 - Spawning a process via `RtlCreateProcessReflection` - The original POC is available on [GitHub](https://gist.github.com/GeneralTesler/68903f7eb00f047d32a4d6c55da5a05c)  
